@@ -1,4 +1,4 @@
-module github.com/unsafe9/grpc_tool
+module github.com/unsafe9/grpc-tool
 
 go 1.23.0
 
