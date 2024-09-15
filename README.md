@@ -1,4 +1,4 @@
-# grpc-tool
+# tinygrpc
 
 A collection of tiny tools for working with gRPC servers in Go.
 
@@ -8,5 +8,5 @@ A collection of tiny tools for working with gRPC servers in Go.
 
 ## Installation
 ```bash
-go get -u github.com/unsafe9/grpc-tool
+go get -u github.com/unsafe9/tinygrpc
 ```

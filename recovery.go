@@ -1,4 +1,4 @@
-package grpc_tool
+package tinygrpc
 
 import (
 	"context"
