@@ -14,10 +14,36 @@ import (
 	"time"
 )
 
-var apiLogger *logrus.Logger
+var (
+	apiLogger                *logrus.Logger
+	unaryLogLevelDeterminer  func(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level  = defaultUnaryLogLevelDeterminer
+	streamLogLevelDeterminer func(ctx context.Context, info *grpc.StreamServerInfo, err error) logrus.Level = defaultStreamLogLevelDeterminer
+)
 
 func SetLogger(logger *logrus.Logger) {
 	apiLogger = logger
+}
+
+func defaultUnaryLogLevelDeterminer(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level {
+	if err != nil {
+		return logrus.ErrorLevel
+	}
+	return logrus.InfoLevel
+}
+
+func defaultStreamLogLevelDeterminer(ctx context.Context, info *grpc.StreamServerInfo, err error) logrus.Level {
+	if err != nil {
+		return logrus.ErrorLevel
+	}
+	return logrus.InfoLevel
+}
+
+func SetUnaryLogLevelDeterminer(f func(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level) {
+	unaryLogLevelDeterminer = f
+}
+
+func SetStreamLogLevelDeterminer(f func(ctx context.Context, info *grpc.StreamServerInfo, err error) logrus.Level) {
+	streamLogLevelDeterminer = f
 }
 
 func LogrusKeySortingFunc(keys []string) {
@@ -98,7 +124,7 @@ func UnaryLoggingInterceptor(ctx context.Context, req interface{}, info *grpc.Un
 	if err != nil {
 		entry = entry.WithError(err)
 	}
-	entry.Info()
+	entry.Log(unaryLogLevelDeterminer(ctx, info, err))
 
 	return res, err
 }
@@ -114,7 +140,8 @@ func StreamLoggingInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.
 	err := handler(srv, ss)
 	duration := time.Since(start)
 
-	peerAddr, userAgent, host := metadataVars(ss.Context())
+	ctx := ss.Context()
+	peerAddr, userAgent, host := metadataVars(ctx)
 
 	entry := apiLogger.WithFields(logrus.Fields{
 		"method":     info.FullMethod,
@@ -127,7 +154,7 @@ func StreamLoggingInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.
 	if err != nil {
 		entry = entry.WithError(err)
 	}
-	entry.Info()
+	entry.Log(streamLogLevelDeterminer(ctx, info, err))
 
 	return err
 }
