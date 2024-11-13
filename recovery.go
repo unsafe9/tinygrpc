@@ -9,7 +9,7 @@ import (
 	"runtime/debug"
 )
 
-func UnaryRecoveryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ interface{}, retErr error) {
+func UnaryRecoveryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logrus.WithFields(logrus.Fields{
@@ -24,7 +24,7 @@ func UnaryRecoveryInterceptor(ctx context.Context, req interface{}, info *grpc.U
 	return handler(ctx, req)
 }
 
-func StreamRecoveryInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (retErr error) {
+func StreamRecoveryInterceptor(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logrus.WithFields(logrus.Fields{

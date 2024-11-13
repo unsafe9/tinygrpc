@@ -131,7 +131,7 @@ func NewStreamLoggingInterceptor(logger *logrus.Logger, determiner StreamLogLeve
 	if determiner == nil {
 		determiner = defaultStreamLogLevelDeterminer
 	}
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		start := time.Now()
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
 			ss = &loggingServerStream{
@@ -169,7 +169,7 @@ type loggingServerStream struct {
 	logger *logrus.Logger
 }
 
-func (l *loggingServerStream) SendMsg(m interface{}) error {
+func (l *loggingServerStream) SendMsg(m any) error {
 	start := time.Now()
 	err := l.ServerStream.SendMsg(m)
 	duration := time.Since(start)
@@ -194,7 +194,7 @@ func (l *loggingServerStream) SendMsg(m interface{}) error {
 	return err
 }
 
-func (l *loggingServerStream) RecvMsg(m interface{}) error {
+func (l *loggingServerStream) RecvMsg(m any) error {
 	start := time.Now()
 	err := l.ServerStream.RecvMsg(m)
 	duration := time.Since(start)

@@ -8,13 +8,13 @@ import (
 type ContextInjector func(ctx context.Context) context.Context
 
 func UnaryWithContext(injector ContextInjector) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ interface{}, retErr error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, retErr error) {
 		return handler(injector(ctx), req)
 	}
 }
 
 func StreamWithContext(injector ContextInjector) grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (retErr error) {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (retErr error) {
 		return handler(srv, &serverStreamWithContext{ss, injector(ss.Context())})
 	}
 }
