@@ -14,15 +14,10 @@ import (
 	"time"
 )
 
-var (
-	apiLogger                *logrus.Logger
-	unaryLogLevelDeterminer  func(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level  = defaultUnaryLogLevelDeterminer
-	streamLogLevelDeterminer func(ctx context.Context, info *grpc.StreamServerInfo, err error) logrus.Level = defaultStreamLogLevelDeterminer
+type (
+	UnaryLogLevelDeterminer  func(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level
+	StreamLogLevelDeterminer func(ctx context.Context, info *grpc.StreamServerInfo, err error) logrus.Level
 )
-
-func SetLogger(logger *logrus.Logger) {
-	apiLogger = logger
-}
 
 func defaultUnaryLogLevelDeterminer(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level {
 	if err != nil {
@@ -36,14 +31,6 @@ func defaultStreamLogLevelDeterminer(ctx context.Context, info *grpc.StreamServe
 		return logrus.ErrorLevel
 	}
 	return logrus.InfoLevel
-}
-
-func SetUnaryLogLevelDeterminer(f func(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level) {
-	unaryLogLevelDeterminer = f
-}
-
-func SetStreamLogLevelDeterminer(f func(ctx context.Context, info *grpc.StreamServerInfo, err error) logrus.Level) {
-	streamLogLevelDeterminer = f
 }
 
 func LogrusKeySortingFunc(keys []string) {
@@ -92,76 +79,94 @@ func metadataVars(ctx context.Context) (peerAddr, userAgent, host string) {
 	return
 }
 
-func UnaryLoggingInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-	start := time.Now()
-	res, err := handler(ctx, req)
-	duration := time.Since(start)
-
-	var (
-		reqStr string
-		resStr string
-	)
-	if req != nil {
-		reqMarshal, _ := protojson.Marshal(req.(proto.Message))
-		reqStr = string(reqMarshal)
+func NewUnaryLoggingInterceptor(logger *logrus.Logger, determiner UnaryLogLevelDeterminer) grpc.UnaryServerInterceptor {
+	if logger == nil {
+		logger = logrus.StandardLogger()
 	}
-	if res != nil {
-		resMarshal, _ := protojson.Marshal(res.(proto.Message))
-		resStr = string(resMarshal)
+	if determiner == nil {
+		determiner = defaultUnaryLogLevelDeterminer
 	}
-	peerAddr, userAgent, host := metadataVars(ctx)
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		start := time.Now()
+		res, err := handler(ctx, req)
+		duration := time.Since(start)
 
-	entry := apiLogger.WithFields(logrus.Fields{
-		"method":     info.FullMethod,
-		"status":     status.Code(err).String(),
-		"duration":   duration.String(),
-		"req":        reqStr,
-		"res":        resStr,
-		"peer":       peerAddr,
-		"user_agent": userAgent,
-		"host":       host,
-	})
-	if err != nil {
-		entry = entry.WithError(err)
+		var (
+			reqStr string
+			resStr string
+		)
+		if req != nil {
+			reqMarshal, _ := protojson.Marshal(req.(proto.Message))
+			reqStr = string(reqMarshal)
+		}
+		if res != nil {
+			resMarshal, _ := protojson.Marshal(res.(proto.Message))
+			resStr = string(resMarshal)
+		}
+		peerAddr, userAgent, host := metadataVars(ctx)
+
+		entry := logger.WithFields(logrus.Fields{
+			"method":     info.FullMethod,
+			"status":     status.Code(err).String(),
+			"duration":   duration.String(),
+			"req":        reqStr,
+			"res":        resStr,
+			"peer":       peerAddr,
+			"user_agent": userAgent,
+			"host":       host,
+		})
+		if err != nil {
+			entry = entry.WithError(err)
+		}
+		entry.Log(determiner(ctx, info, err))
+
+		return res, err
 	}
-	entry.Log(unaryLogLevelDeterminer(ctx, info, err))
-
-	return res, err
 }
 
-func StreamLoggingInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	start := time.Now()
-	if logrus.IsLevelEnabled(logrus.DebugLevel) {
-		ss = &loggingServerStream{
-			ServerStream: ss,
-			method:       info.FullMethod,
+func NewStreamLoggingInterceptor(logger *logrus.Logger, determiner StreamLogLevelDeterminer) grpc.StreamServerInterceptor {
+	if logger == nil {
+		logger = logrus.StandardLogger()
+	}
+	if determiner == nil {
+		determiner = defaultStreamLogLevelDeterminer
+	}
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		start := time.Now()
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			ss = &loggingServerStream{
+				ServerStream: ss,
+				method:       info.FullMethod,
+				logger:       logger,
+			}
 		}
+		err := handler(srv, ss)
+		duration := time.Since(start)
+
+		ctx := ss.Context()
+		peerAddr, userAgent, host := metadataVars(ctx)
+
+		entry := logger.WithFields(logrus.Fields{
+			"method":     info.FullMethod,
+			"status":     status.Code(err).String(),
+			"duration":   duration.String(),
+			"peer":       peerAddr,
+			"user_agent": userAgent,
+			"host":       host,
+		})
+		if err != nil {
+			entry = entry.WithError(err)
+		}
+		entry.Log(determiner(ctx, info, err))
+
+		return err
 	}
-	err := handler(srv, ss)
-	duration := time.Since(start)
-
-	ctx := ss.Context()
-	peerAddr, userAgent, host := metadataVars(ctx)
-
-	entry := apiLogger.WithFields(logrus.Fields{
-		"method":     info.FullMethod,
-		"status":     status.Code(err).String(),
-		"duration":   duration.String(),
-		"peer":       peerAddr,
-		"user_agent": userAgent,
-		"host":       host,
-	})
-	if err != nil {
-		entry = entry.WithError(err)
-	}
-	entry.Log(streamLogLevelDeterminer(ctx, info, err))
-
-	return err
 }
 
 type loggingServerStream struct {
 	grpc.ServerStream
 	method string
+	logger *logrus.Logger
 }
 
 func (l *loggingServerStream) SendMsg(m interface{}) error {
@@ -175,7 +180,7 @@ func (l *loggingServerStream) SendMsg(m interface{}) error {
 		resStr = string(resMarshal)
 	}
 
-	entry := apiLogger.WithFields(logrus.Fields{
+	entry := l.logger.WithFields(logrus.Fields{
 		"method":   l.method,
 		"event":    "send",
 		"duration": duration.String(),
@@ -200,7 +205,7 @@ func (l *loggingServerStream) RecvMsg(m interface{}) error {
 		reqStr = string(reqMarshal)
 	}
 
-	entry := apiLogger.WithFields(logrus.Fields{
+	entry := l.logger.WithFields(logrus.Fields{
 		"method":   l.method,
 		"event":    "receive",
 		"duration": duration.String(),
