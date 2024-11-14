@@ -32,7 +32,7 @@ func LogrusKeySortingFunc(keys []string) {
 		"duration",
 		"req",
 		"res",
-		"peer_ip",
+		"peer",
 		"user_agent",
 		"host",
 		logrus.ErrorKey,
@@ -97,7 +97,7 @@ func UnaryServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer) grp
 
 		entry := logger.WithFields(logrus.Fields{
 			"method":     info.FullMethod,
-			"status":     status.Code(err).String(),
+			"code":       status.Code(err).String(),
 			"duration":   duration.String(),
 			"req":        reqStr,
 			"res":        resStr,
@@ -138,7 +138,7 @@ func StreamServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer, pa
 
 		entry := logger.WithFields(logrus.Fields{
 			"method":     info.FullMethod,
-			"status":     status.Code(err).String(),
+			"code":       status.Code(err).String(),
 			"duration":   duration.String(),
 			"peer":       peerAddr,
 			"user_agent": userAgent,
