@@ -5,17 +5,23 @@ import (
 	"google.golang.org/grpc"
 )
 
-type ContextInjector func(ctx context.Context) context.Context
+type ContextInjector func(c *CallContext) context.Context
 
-func UnaryWithContext(injector ContextInjector) grpc.UnaryServerInterceptor {
+func UnaryServerContextInjector(injector ContextInjector) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, retErr error) {
-		return handler(injector(ctx), req)
+		return handler(injector(newUnaryCallContext(ctx, info)), req)
 	}
 }
 
-func StreamWithContext(injector ContextInjector) grpc.StreamServerInterceptor {
+func StreamServerContextInjector(injector ContextInjector) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (retErr error) {
-		return handler(srv, &serverStreamWithContext{ss, injector(ss.Context())})
+		return handler(
+			srv,
+			&serverStreamWithContext{
+				ServerStream: ss,
+				ctx:          injector(newStreamCallContext(ss.Context(), srv, info)),
+			},
+		)
 	}
 }
 

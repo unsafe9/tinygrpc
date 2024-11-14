@@ -14,19 +14,9 @@ import (
 	"time"
 )
 
-type (
-	UnaryLogLevelDeterminer  func(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level
-	StreamLogLevelDeterminer func(ctx context.Context, info *grpc.StreamServerInfo, err error) logrus.Level
-)
+type LogLevelDeterminer func(c *CallContext, err error) logrus.Level
 
-func defaultUnaryLogLevelDeterminer(ctx context.Context, info *grpc.UnaryServerInfo, err error) logrus.Level {
-	if err != nil {
-		return logrus.ErrorLevel
-	}
-	return logrus.InfoLevel
-}
-
-func defaultStreamLogLevelDeterminer(ctx context.Context, info *grpc.StreamServerInfo, err error) logrus.Level {
+func defaultLogLevelDeterminer(c *CallContext, err error) logrus.Level {
 	if err != nil {
 		return logrus.ErrorLevel
 	}
@@ -62,7 +52,7 @@ func LogrusKeySortingFunc(keys []string) {
 	})
 }
 
-func metadataVars(ctx context.Context) (peerAddr, userAgent, host string) {
+func parseAdditionalPeerInfo(ctx context.Context) (peerAddr, userAgent, host string) {
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if vals := md.Get("x-forwarded-for"); len(vals) > 0 {
 			peerAddr = vals[0]
@@ -79,12 +69,12 @@ func metadataVars(ctx context.Context) (peerAddr, userAgent, host string) {
 	return
 }
 
-func NewUnaryLoggingInterceptor(logger *logrus.Logger, determiner UnaryLogLevelDeterminer) grpc.UnaryServerInterceptor {
+func UnaryServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer) grpc.UnaryServerInterceptor {
 	if logger == nil {
 		logger = logrus.StandardLogger()
 	}
 	if determiner == nil {
-		determiner = defaultUnaryLogLevelDeterminer
+		determiner = defaultLogLevelDeterminer
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		start := time.Now()
@@ -103,7 +93,7 @@ func NewUnaryLoggingInterceptor(logger *logrus.Logger, determiner UnaryLogLevelD
 			resMarshal, _ := protojson.Marshal(res.(proto.Message))
 			resStr = string(resMarshal)
 		}
-		peerAddr, userAgent, host := metadataVars(ctx)
+		peerAddr, userAgent, host := parseAdditionalPeerInfo(ctx)
 
 		entry := logger.WithFields(logrus.Fields{
 			"method":     info.FullMethod,
@@ -118,22 +108,22 @@ func NewUnaryLoggingInterceptor(logger *logrus.Logger, determiner UnaryLogLevelD
 		if err != nil {
 			entry = entry.WithError(err)
 		}
-		entry.Log(determiner(ctx, info, err))
+		entry.Log(determiner(newUnaryCallContext(ctx, info), err))
 
 		return res, err
 	}
 }
 
-func NewStreamLoggingInterceptor(logger *logrus.Logger, determiner StreamLogLevelDeterminer) grpc.StreamServerInterceptor {
+func StreamServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer, payloadLevel logrus.Level) grpc.StreamServerInterceptor {
 	if logger == nil {
 		logger = logrus.StandardLogger()
 	}
 	if determiner == nil {
-		determiner = defaultStreamLogLevelDeterminer
+		determiner = defaultLogLevelDeterminer
 	}
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		start := time.Now()
-		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		if logrus.IsLevelEnabled(payloadLevel) {
 			ss = &loggingServerStream{
 				ServerStream: ss,
 				method:       info.FullMethod,
@@ -144,7 +134,7 @@ func NewStreamLoggingInterceptor(logger *logrus.Logger, determiner StreamLogLeve
 		duration := time.Since(start)
 
 		ctx := ss.Context()
-		peerAddr, userAgent, host := metadataVars(ctx)
+		peerAddr, userAgent, host := parseAdditionalPeerInfo(ctx)
 
 		entry := logger.WithFields(logrus.Fields{
 			"method":     info.FullMethod,
@@ -157,7 +147,7 @@ func NewStreamLoggingInterceptor(logger *logrus.Logger, determiner StreamLogLeve
 		if err != nil {
 			entry = entry.WithError(err)
 		}
-		entry.Log(determiner(ctx, info, err))
+		entry.Log(determiner(newStreamCallContext(ctx, srv, info), err))
 
 		return err
 	}
@@ -167,6 +157,7 @@ type loggingServerStream struct {
 	grpc.ServerStream
 	method string
 	logger *logrus.Logger
+	level  logrus.Level
 }
 
 func (l *loggingServerStream) SendMsg(m any) error {
@@ -189,7 +180,7 @@ func (l *loggingServerStream) SendMsg(m any) error {
 	if err != nil {
 		entry = entry.WithError(err)
 	}
-	entry.Debug()
+	entry.Log(l.level)
 
 	return err
 }
@@ -207,14 +198,14 @@ func (l *loggingServerStream) RecvMsg(m any) error {
 
 	entry := l.logger.WithFields(logrus.Fields{
 		"method":   l.method,
-		"event":    "receive",
+		"event":    "recv",
 		"duration": duration.String(),
 		"req":      reqStr,
 	})
 	if err != nil {
 		entry = entry.WithError(err)
 	}
-	entry.Debug()
+	entry.Log(l.level)
 
 	return err
 }
