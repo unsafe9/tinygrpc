@@ -7,7 +7,7 @@ import (
 	"runtime"
 )
 
-type RecoveryHandler func(c *CallContext, p any) error
+type RecoveryHandler func(c *CallContext, p *PanicWrapper) error
 
 type PanicWrapper struct {
 	Panic any
@@ -18,7 +18,7 @@ func (p PanicWrapper) Error() string {
 	return fmt.Sprintf("panic caught: %v\n%s", p.Panic, p.Stack)
 }
 
-func wrapPanic(p any) error {
+func wrapPanic(p any) *PanicWrapper {
 	stack := make([]byte, 64<<10)
 	stack = stack[:runtime.Stack(stack, false)]
 	return &PanicWrapper{
@@ -31,10 +31,11 @@ func UnaryServerRecoveryHandler(recoveryHandler RecoveryHandler) grpc.UnaryServe
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, retErr error) {
 		defer func() {
 			if r := recover(); r != nil {
+				p := wrapPanic(r)
 				if recoveryHandler != nil {
-					retErr = recoveryHandler(newUnaryCallContext(ctx, info), r)
+					retErr = recoveryHandler(newUnaryCallContext(ctx, info), p)
 				} else {
-					retErr = wrapPanic(r)
+					retErr = p
 				}
 			}
 		}()
@@ -46,10 +47,11 @@ func StreamServerRecoveryHandler(recoveryHandler RecoveryHandler) grpc.StreamSer
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (retErr error) {
 		defer func() {
 			if r := recover(); r != nil {
+				p := wrapPanic(r)
 				if recoveryHandler != nil {
-					retErr = recoveryHandler(newStreamCallContext(ss.Context(), srv, info), r)
+					retErr = recoveryHandler(newStreamCallContext(ss.Context(), srv, info), p)
 				} else {
-					retErr = wrapPanic(r)
+					retErr = p
 				}
 			}
 		}()
