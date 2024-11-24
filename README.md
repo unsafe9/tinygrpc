@@ -1,8 +1,8 @@
 # tinygrpc
 
-A collection of tiny tools for working with gRPC servers in Go.
+A collection of tiny tools for gRPC server development in Go.
 
-You'd better use [go-grpc-middleware](https://github.com/grpc-ecosystem/go-grpc-middleware) for more advanced features.
+For more advanced features, [go-grpc-middleware](https://github.com/grpc-ecosystem/go-grpc-middleware) could be a better option.
 
 ## Depends on
 - grpc
