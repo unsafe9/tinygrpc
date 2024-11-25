@@ -9,7 +9,52 @@ import (
 	"strings"
 )
 
+type AuthProvider interface {
+	Verify(c *CallContext, token string) (context.Context, error)
+}
+
+type chainAuthProvider struct {
+	providers []AuthProvider
+}
+
+func ChainAuthProvider(providers ...AuthProvider) AuthProvider {
+	return &chainAuthProvider{providers: providers}
+}
+
+func (p *chainAuthProvider) Verify(c *CallContext, token string) (ctx context.Context, err error) {
+	for _, provider := range p.providers {
+		ctx, err = provider.Verify(c, token)
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+type optionalChainAuthProvider struct {
+	providers []AuthProvider
+}
+
+func OptionalChainAuthProvider(providers ...AuthProvider) AuthProvider {
+	return &optionalChainAuthProvider{providers: providers}
+}
+
+func (p *optionalChainAuthProvider) Verify(c *CallContext, token string) (ctx context.Context, err error) {
+	// inject context if any provider returns context
+	for _, provider := range p.providers {
+		ctx, err = provider.Verify(c, token)
+		if status.Code(err) != codes.Unauthenticated {
+			return
+		}
+	}
+	return ctx, nil
+}
+
 type AuthHandler func(c *CallContext, token string) (context.Context, error)
+
+func (h AuthHandler) Verify(c *CallContext, token string) (context.Context, error) {
+	return h(c, token)
+}
 
 func extractAuthMetadata(ctx context.Context, mdKey, schema string) (string, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
@@ -30,13 +75,13 @@ func extractAuthMetadata(ctx context.Context, mdKey, schema string) (string, err
 	return token, nil
 }
 
-func UnaryServerAuthHandler(mdKey, schema string, authHandler AuthHandler) grpc.UnaryServerInterceptor {
+func UnaryServerAuthHandler(mdKey, schema string, authProvider AuthProvider) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		token, err := extractAuthMetadata(ctx, mdKey, schema)
 		if err != nil {
 			return nil, err
 		}
-		newCtx, err := authHandler(newUnaryCallContext(ctx, info), token)
+		newCtx, err := authProvider.Verify(newUnaryCallContext(ctx, info), token)
 		if err != nil {
 			return nil, err
 		}
