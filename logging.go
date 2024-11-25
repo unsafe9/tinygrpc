@@ -30,6 +30,7 @@ func LogrusKeySortingFunc(keys []string) {
 		"method",
 		"code",
 		"duration",
+		"event",
 		"req",
 		"res",
 		"peer",
