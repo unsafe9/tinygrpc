@@ -10,7 +10,7 @@ import (
 )
 
 type AuthProvider interface {
-	Verify(c *CallContext, token string) (context.Context, error)
+	VerifyAuth(c *CallContext) (context.Context, error)
 }
 
 type chainAuthProvider struct {
@@ -21,9 +21,9 @@ func ChainAuthProvider(providers ...AuthProvider) AuthProvider {
 	return &chainAuthProvider{providers: providers}
 }
 
-func (p *chainAuthProvider) Verify(c *CallContext, token string) (ctx context.Context, err error) {
+func (p *chainAuthProvider) VerifyAuth(c *CallContext) (ctx context.Context, err error) {
 	for _, provider := range p.providers {
-		ctx, err = provider.Verify(c, token)
+		ctx, err = provider.VerifyAuth(c)
 		if err != nil {
 			return
 		}
@@ -39,10 +39,10 @@ func OptionalChainAuthProvider(providers ...AuthProvider) AuthProvider {
 	return &optionalChainAuthProvider{providers: providers}
 }
 
-func (p *optionalChainAuthProvider) Verify(c *CallContext, token string) (ctx context.Context, err error) {
+func (p *optionalChainAuthProvider) VerifyAuth(c *CallContext) (ctx context.Context, err error) {
 	// inject context if any provider returns context
 	for _, provider := range p.providers {
-		ctx, err = provider.Verify(c, token)
+		ctx, err = provider.VerifyAuth(c)
 		if status.Code(err) != codes.Unauthenticated {
 			return
 		}
@@ -50,13 +50,13 @@ func (p *optionalChainAuthProvider) Verify(c *CallContext, token string) (ctx co
 	return ctx, nil
 }
 
-type AuthHandler func(c *CallContext, token string) (context.Context, error)
+type AuthHandler func(c *CallContext) (context.Context, error)
 
-func (h AuthHandler) Verify(c *CallContext, token string) (context.Context, error) {
-	return h(c, token)
+func (h AuthHandler) VerifyAuth(c *CallContext) (context.Context, error) {
+	return h(c)
 }
 
-func extractAuthMetadata(ctx context.Context, mdKey, schema string) (string, error) {
+func ExtractAuthMetadata(ctx context.Context, mdKey, schema string) (string, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "missing metadata")
@@ -75,13 +75,9 @@ func extractAuthMetadata(ctx context.Context, mdKey, schema string) (string, err
 	return token, nil
 }
 
-func UnaryServerAuthHandler(mdKey, schema string, authProvider AuthProvider) grpc.UnaryServerInterceptor {
+func UnaryServerAuthHandler(authProvider AuthProvider) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		token, err := extractAuthMetadata(ctx, mdKey, schema)
-		if err != nil {
-			return nil, err
-		}
-		newCtx, err := authProvider.Verify(newUnaryCallContext(ctx, info), token)
+		newCtx, err := authProvider.VerifyAuth(newUnaryCallContext(ctx, info))
 		if err != nil {
 			return nil, err
 		}
@@ -92,18 +88,15 @@ func UnaryServerAuthHandler(mdKey, schema string, authProvider AuthProvider) grp
 	}
 }
 
-func StreamServerAuthHandler(mdKey, schema string, authHandler AuthHandler) grpc.StreamServerInterceptor {
+func StreamServerAuthHandler(authHandler AuthHandler) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		token, err := extractAuthMetadata(ss.Context(), mdKey, schema)
+		ctx := ss.Context()
+		newCtx, err := authHandler(newStreamCallContext(ctx, srv, info))
 		if err != nil {
 			return err
 		}
-		ctx, err := authHandler(newStreamCallContext(ss.Context(), srv, info), token)
-		if err != nil {
-			return err
-		}
-		if ctx != nil || ctx != ss.Context() {
-			ss = &serverStreamWithContext{ServerStream: ss, ctx: ctx}
+		if newCtx == nil || newCtx != ctx {
+			ss = &serverStreamWithContext{ServerStream: ss, ctx: newCtx}
 		}
 		return handler(srv, ss)
 	}
