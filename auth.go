@@ -13,47 +13,54 @@ type AuthProvider interface {
 	VerifyAuth(c *CallContext) (context.Context, error)
 }
 
-type chainAuthProvider struct {
-	providers []AuthProvider
+type MultiAuthProvider struct {
+	// Providers is a list of auth providers to be chained
+	Providers []AuthProvider
+
+	// AllowUnauthenticated allows the process to pass without authentication
+	//  if all providers fail.
+	AllowUnauthenticated bool
+
+	// EvaluateAll ensures that all providers in the chain are evaluated,
+	//  injecting combined contexts from all successful providers, even if one succeeds early.
+	EvaluateAll bool
+
+	// RequireAll requires all providers to succeed, otherwise it will return an error.
+	RequireAll bool
 }
 
-func ChainAuthProvider(providers ...AuthProvider) AuthProvider {
-	return &chainAuthProvider{providers: providers}
-}
-
-func (p *chainAuthProvider) VerifyAuth(c *CallContext) (ctx context.Context, err error) {
-	for _, provider := range p.providers {
+func (p *MultiAuthProvider) VerifyAuth(c *CallContext) (context.Context, error) {
+	var (
+		ctx           context.Context
+		err           error
+		authenticated bool
+	)
+	for _, provider := range p.Providers {
 		ctx, err = provider.VerifyAuth(c)
 		if err != nil {
-			return
+			if p.RequireAll || status.Code(err) != codes.Unauthenticated {
+				return ctx, err
+			}
+		} else {
+			authenticated = true
+			if !p.RequireAll && !p.EvaluateAll {
+				break
+			}
+			if ctx != nil {
+				c.ctx = ctx // inject context for next provider
+			}
 		}
 	}
-	return
-}
-
-type optionalChainAuthProvider struct {
-	providers []AuthProvider
-}
-
-func OptionalChainAuthProvider(providers ...AuthProvider) AuthProvider {
-	return &optionalChainAuthProvider{providers: providers}
-}
-
-func (p *optionalChainAuthProvider) VerifyAuth(c *CallContext) (ctx context.Context, err error) {
-	// inject context if any provider returns context
-	for _, provider := range p.providers {
-		ctx, err = provider.VerifyAuth(c)
-		if status.Code(err) != codes.Unauthenticated {
-			return
-		}
+	if !authenticated && !p.AllowUnauthenticated {
+		return ctx, status.Error(codes.Unauthenticated, "all auth providers failed")
 	}
 	return ctx, nil
 }
 
-type AuthHandler func(c *CallContext) (context.Context, error)
+type AuthProviderFunc func(c *CallContext) (context.Context, error)
 
-func (h AuthHandler) VerifyAuth(c *CallContext) (context.Context, error) {
-	return h(c)
+func (f AuthProviderFunc) VerifyAuth(c *CallContext) (context.Context, error) {
+	return f(c)
 }
 
 func ExtractAuthMetadata(ctx context.Context, mdKey, schema string) (string, error) {
@@ -88,10 +95,10 @@ func UnaryServerAuthHandler(authProvider AuthProvider) grpc.UnaryServerIntercept
 	}
 }
 
-func StreamServerAuthHandler(authHandler AuthHandler) grpc.StreamServerInterceptor {
+func StreamServerAuthHandler(authProvider AuthProvider) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		ctx := ss.Context()
-		newCtx, err := authHandler(newStreamCallContext(ctx, srv, info))
+		newCtx, err := authProvider.VerifyAuth(newStreamCallContext(ctx, srv, info))
 		if err != nil {
 			return err
 		}

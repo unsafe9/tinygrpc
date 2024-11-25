@@ -15,15 +15,19 @@ const (
 )
 
 type CallContext struct {
-	Ctx        context.Context
+	ctx        context.Context
 	Server     any
 	FullMethod string
 	CallType   CallType
 }
 
+func (c *CallContext) Context() context.Context {
+	return c.ctx
+}
+
 func newUnaryCallContext(ctx context.Context, info *grpc.UnaryServerInfo) *CallContext {
 	return &CallContext{
-		Ctx:        ctx,
+		ctx:        ctx,
 		Server:     info.Server,
 		FullMethod: info.FullMethod,
 		CallType:   CallTypeUnary,
@@ -42,7 +46,7 @@ func newStreamCallContext(ctx context.Context, server any, info *grpc.StreamServ
 		panic("invalid stream call type")
 	}
 	return &CallContext{
-		Ctx:        ctx,
+		ctx:        ctx,
 		Server:     server,
 		FullMethod: info.FullMethod,
 		CallType:   callType,
