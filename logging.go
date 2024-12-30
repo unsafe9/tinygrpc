@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+var pj = protojson.MarshalOptions{
+	EmitDefaultValues: true,
+}
+
 type LogLevelDeterminer func(c *CallContext, err error) logrus.Level
 
 func defaultLogLevelDeterminer(c *CallContext, err error) logrus.Level {
@@ -87,11 +91,11 @@ func UnaryServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer) grp
 			resStr string
 		)
 		if req != nil {
-			reqMarshal, _ := protojson.Marshal(req.(proto.Message))
+			reqMarshal, _ := pj.Marshal(req.(proto.Message))
 			reqStr = string(reqMarshal)
 		}
 		if res != nil {
-			resMarshal, _ := protojson.Marshal(res.(proto.Message))
+			resMarshal, _ := pj.Marshal(res.(proto.Message))
 			resStr = string(resMarshal)
 		}
 		peerAddr, userAgent, host := parseAdditionalPeerInfo(ctx)
@@ -168,7 +172,7 @@ func (l *loggingServerStream) SendMsg(m any) error {
 
 	var resStr string
 	if m != nil {
-		resMarshal, _ := protojson.Marshal(m.(proto.Message))
+		resMarshal, _ := pj.Marshal(m.(proto.Message))
 		resStr = string(resMarshal)
 	}
 
@@ -193,7 +197,7 @@ func (l *loggingServerStream) RecvMsg(m any) error {
 
 	var reqStr string
 	if m != nil {
-		reqMarshal, _ := protojson.Marshal(m.(proto.Message))
+		reqMarshal, _ := pj.Marshal(m.(proto.Message))
 		reqStr = string(reqMarshal)
 	}
 
