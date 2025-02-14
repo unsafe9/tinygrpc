@@ -14,6 +14,29 @@ import (
 	"time"
 )
 
+type logCtxKeyType struct{}
+
+var logCtxKey = logCtxKeyType{}
+
+func WithLogFields(ctx context.Context, fields logrus.Fields) context.Context {
+	if logCtx, ok := ctx.Value(logCtxKey).(logrus.Fields); ok {
+		for k, v := range fields {
+			logCtx[k] = v
+		}
+		return context.WithValue(ctx, logCtxKey, logCtx)
+	}
+	return context.WithValue(ctx, logCtxKey, fields)
+}
+
+func getLogFields(ctx context.Context, fields logrus.Fields) logrus.Fields {
+	if additionalFields, ok := ctx.Value(logCtxKey).(logrus.Fields); ok {
+		for k, v := range additionalFields {
+			fields[k] = v
+		}
+	}
+	return fields
+}
+
 var pj = protojson.MarshalOptions{
 	EmitDefaultValues: true,
 }
@@ -27,25 +50,27 @@ func defaultLogLevelDeterminer(c *CallContext, err error) logrus.Level {
 	return logrus.InfoLevel
 }
 
-func LogrusKeySortingFunc(keys []string) {
-	order := []string{
-		logrus.FieldKeyTime,
-		logrus.FieldKeyLevel,
-		"method",
-		"code",
-		"duration",
-		"event",
-		"req",
-		"res",
-		"peer",
-		"user_agent",
-		"host",
-		logrus.ErrorKey,
-	}
+var LogFieldsOrder = []string{
+	logrus.FieldKeyTime,
+	logrus.FieldKeyLevel,
+	"method",
+	"code",
+	"duration",
+	"event",
+	"req",
+	"res",
+	"user", // reserved
+	"auth", // reserved
+	"peer",
+	"user_agent",
+	"host",
+	logrus.ErrorKey,
+}
 
+func SortLogFields(keys []string) {
 	sort.SliceStable(keys, func(i, j int) bool {
-		io := slices.Index(order, keys[i])
-		jo := slices.Index(order, keys[j])
+		io := slices.Index(LogFieldsOrder, keys[i])
+		jo := slices.Index(LogFieldsOrder, keys[j])
 		if io == -1 && jo == -1 {
 			return true
 		} else if io == -1 {
@@ -100,16 +125,21 @@ func UnaryServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer) grp
 		}
 		peerAddr, userAgent, host := parseAdditionalPeerInfo(ctx)
 
-		entry := logger.WithFields(logrus.Fields{
-			"method":     info.FullMethod,
-			"code":       status.Code(err).String(),
-			"duration":   duration.String(),
-			"req":        reqStr,
-			"res":        resStr,
-			"peer":       peerAddr,
-			"user_agent": userAgent,
-			"host":       host,
-		})
+		entry := logger.WithFields(
+			getLogFields(
+				ctx,
+				logrus.Fields{
+					"method":     info.FullMethod,
+					"code":       status.Code(err).String(),
+					"duration":   duration.String(),
+					"req":        reqStr,
+					"res":        resStr,
+					"peer":       peerAddr,
+					"user_agent": userAgent,
+					"host":       host,
+				},
+			),
+		)
 		if err != nil {
 			entry = entry.WithError(err)
 		}
@@ -141,14 +171,19 @@ func StreamServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer, pa
 		ctx := ss.Context()
 		peerAddr, userAgent, host := parseAdditionalPeerInfo(ctx)
 
-		entry := logger.WithFields(logrus.Fields{
-			"method":     info.FullMethod,
-			"code":       status.Code(err).String(),
-			"duration":   duration.String(),
-			"peer":       peerAddr,
-			"user_agent": userAgent,
-			"host":       host,
-		})
+		entry := logger.WithFields(
+			getLogFields(
+				ctx,
+				logrus.Fields{
+					"method":     info.FullMethod,
+					"code":       status.Code(err).String(),
+					"duration":   duration.String(),
+					"peer":       peerAddr,
+					"user_agent": userAgent,
+					"host":       host,
+				},
+			),
+		)
 		if err != nil {
 			entry = entry.WithError(err)
 		}
