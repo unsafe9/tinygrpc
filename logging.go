@@ -2,6 +2,7 @@ package tinygrpc
 
 import (
 	"context"
+	"fmt"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -11,8 +12,15 @@ import (
 	"google.golang.org/protobuf/proto"
 	"slices"
 	"sort"
+	"sync/atomic"
 	"time"
 )
+
+var logLimitBytes atomic.Int32
+
+func SetLogLimitBytes(limit int32) {
+	logLimitBytes.Store(limit)
+}
 
 type logCtxKeyType struct{}
 
@@ -59,6 +67,20 @@ func getLogFields(ctx context.Context, fields logrus.Fields) logrus.Fields {
 		}
 		for k := range val.skipKeys {
 			delete(fields, k)
+		}
+	}
+
+	limitBytes := int(logLimitBytes.Load())
+	for k, v := range fields {
+		switch val := v.(type) {
+		case string:
+			if len(val) > limitBytes {
+				fields[k] = fmt.Sprintf("[truncated %d/%d] %s...", limitBytes, len(val), val[:limitBytes])
+			}
+		case []byte:
+			if len(val) > limitBytes {
+				fields[k] = val[:limitBytes]
+			}
 		}
 	}
 	return fields
