@@ -18,20 +18,47 @@ type logCtxKeyType struct{}
 
 var logCtxKey = logCtxKeyType{}
 
+type logContextValue struct {
+	additionalFields logrus.Fields
+	skipKeys         map[string]struct{}
+}
+
 func WithLogFields(ctx context.Context, fields logrus.Fields) context.Context {
-	if logCtx, ok := ctx.Value(logCtxKey).(logrus.Fields); ok {
-		for k, v := range fields {
-			logCtx[k] = v
-		}
-		return context.WithValue(ctx, logCtxKey, logCtx)
+	var val logContextValue
+	if ctxVal := ctx.Value(logCtxKey); ctxVal != nil {
+		val = ctxVal.(logContextValue)
 	}
-	return context.WithValue(ctx, logCtxKey, fields)
+	if val.additionalFields == nil {
+		val.additionalFields = make(logrus.Fields)
+	}
+	for k, v := range fields {
+		val.additionalFields[k] = v
+	}
+	return context.WithValue(ctx, logCtxKey, val)
+}
+
+func WithSkipLogKeys(ctx context.Context, keys ...string) context.Context {
+	var val logContextValue
+	if ctxVal := ctx.Value(logCtxKey); ctxVal != nil {
+		val = ctxVal.(logContextValue)
+	}
+	if val.skipKeys == nil {
+		val.skipKeys = make(map[string]struct{})
+	}
+	for _, k := range keys {
+		val.skipKeys[k] = struct{}{}
+	}
+	return context.WithValue(ctx, logCtxKey, val)
 }
 
 func getLogFields(ctx context.Context, fields logrus.Fields) logrus.Fields {
-	if additionalFields, ok := ctx.Value(logCtxKey).(logrus.Fields); ok {
-		for k, v := range additionalFields {
+	if ctxVal := ctx.Value(logCtxKey); ctxVal != nil {
+		val := ctxVal.(logContextValue)
+		for k, v := range val.additionalFields {
 			fields[k] = v
+		}
+		for k := range val.skipKeys {
+			delete(fields, k)
 		}
 	}
 	return fields
