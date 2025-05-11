@@ -3,7 +3,6 @@ package tinygrpc
 import (
 	"context"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
@@ -16,6 +15,8 @@ import (
 	"time"
 )
 
+type LogFields map[string]any
+
 var logLimitBytes atomic.Int32
 
 func SetLogLimitBytes(limit int32) {
@@ -27,17 +28,17 @@ type logCtxKeyType struct{}
 var logCtxKey = logCtxKeyType{}
 
 type logContextValue struct {
-	additionalFields logrus.Fields
+	additionalFields LogFields
 	skipKeys         map[string]struct{}
 }
 
-func WithLogFields(ctx context.Context, fields logrus.Fields) context.Context {
+func WithLogFields(ctx context.Context, fields LogFields) context.Context {
 	var val logContextValue
 	if ctxVal := ctx.Value(logCtxKey); ctxVal != nil {
 		val = ctxVal.(logContextValue)
 	}
 	if val.additionalFields == nil {
-		val.additionalFields = make(logrus.Fields)
+		val.additionalFields = make(LogFields)
 	}
 	for k, v := range fields {
 		val.additionalFields[k] = v
@@ -59,7 +60,7 @@ func WithSkipLogKeys(ctx context.Context, keys ...string) context.Context {
 	return context.WithValue(ctx, logCtxKey, val)
 }
 
-func getLogFields(ctx context.Context, fields logrus.Fields) logrus.Fields {
+func getLogFields(ctx context.Context, fields LogFields) LogFields {
 	if ctxVal := ctx.Value(logCtxKey); ctxVal != nil {
 		val := ctxVal.(logContextValue)
 		for k, v := range val.additionalFields {
@@ -90,18 +91,11 @@ var pj = protojson.MarshalOptions{
 	EmitDefaultValues: true,
 }
 
-type LogLevelDeterminer func(c *CallContext, err error) logrus.Level
+type LogFunc func(c *CallContext, fields LogFields, err error)
 
-func defaultLogLevelDeterminer(c *CallContext, err error) logrus.Level {
-	if err != nil {
-		return logrus.ErrorLevel
-	}
-	return logrus.InfoLevel
-}
-
-var LogFieldsOrder = []string{
-	logrus.FieldKeyTime,
-	logrus.FieldKeyLevel,
+var LogFieldsInOrder = []string{
+	"time",
+	"level",
 	"method",
 	"code",
 	"duration",
@@ -113,13 +107,13 @@ var LogFieldsOrder = []string{
 	"peer",
 	"user_agent",
 	"host",
-	logrus.ErrorKey,
+	"error",
 }
 
 func SortLogFields(keys []string) {
 	sort.SliceStable(keys, func(i, j int) bool {
-		io := slices.Index(LogFieldsOrder, keys[i])
-		jo := slices.Index(LogFieldsOrder, keys[j])
+		io := slices.Index(LogFieldsInOrder, keys[i])
+		jo := slices.Index(LogFieldsInOrder, keys[j])
 		if io == -1 && jo == -1 {
 			return true
 		} else if io == -1 {
@@ -148,13 +142,7 @@ func parseAdditionalPeerInfo(ctx context.Context) (peerAddr, userAgent, host str
 	return
 }
 
-func UnaryServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer) grpc.UnaryServerInterceptor {
-	if logger == nil {
-		logger = logrus.StandardLogger()
-	}
-	if determiner == nil {
-		determiner = defaultLogLevelDeterminer
-	}
+func UnaryServerLogger(logFunc LogFunc) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		start := time.Now()
 		res, err := handler(ctx, req)
@@ -174,69 +162,63 @@ func UnaryServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer) grp
 		}
 		peerAddr, userAgent, host := parseAdditionalPeerInfo(ctx)
 
-		entry := logger.WithFields(
-			getLogFields(
-				ctx,
-				logrus.Fields{
-					"method":     info.FullMethod,
-					"code":       status.Code(err).String(),
-					"duration":   duration.String(),
-					"req":        reqStr,
-					"res":        resStr,
-					"peer":       peerAddr,
-					"user_agent": userAgent,
-					"host":       host,
-				},
-			),
+		logFields := getLogFields(
+			ctx,
+			LogFields{
+				"method":     info.FullMethod,
+				"code":       status.Code(err).String(),
+				"duration":   duration.String(),
+				"req":        reqStr,
+				"res":        resStr,
+				"peer":       peerAddr,
+				"user_agent": userAgent,
+				"host":       host,
+			},
 		)
 		if err != nil {
-			entry = entry.WithError(err)
+			logFields["error"] = err.Error()
 		}
-		entry.Log(determiner(newUnaryCallContext(ctx, info), err))
+		logFunc(newUnaryCallContext(ctx, info), logFields, err)
 
 		return res, err
 	}
 }
 
-func StreamServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer, payloadLevel logrus.Level) grpc.StreamServerInterceptor {
-	if logger == nil {
-		logger = logrus.StandardLogger()
-	}
-	if determiner == nil {
-		determiner = defaultLogLevelDeterminer
-	}
+func StreamServerLogger(logFunc LogFunc, logPayload bool) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		start := time.Now()
-		if logrus.IsLevelEnabled(payloadLevel) {
-			ss = &loggingServerStream{
-				ServerStream: ss,
-				method:       info.FullMethod,
-				logger:       logger,
-			}
-		}
 		err := handler(srv, ss)
 		duration := time.Since(start)
 
 		ctx := ss.Context()
+		callCtx := newStreamCallContext(ctx, srv, info)
+
+		if logPayload {
+			ss = &loggingServerStream{
+				ServerStream: ss,
+				callCtx:      callCtx,
+				method:       info.FullMethod,
+				logFunc:      logFunc,
+			}
+		}
+
 		peerAddr, userAgent, host := parseAdditionalPeerInfo(ctx)
 
-		entry := logger.WithFields(
-			getLogFields(
-				ctx,
-				logrus.Fields{
-					"method":     info.FullMethod,
-					"code":       status.Code(err).String(),
-					"duration":   duration.String(),
-					"peer":       peerAddr,
-					"user_agent": userAgent,
-					"host":       host,
-				},
-			),
+		logFields := getLogFields(
+			ctx,
+			LogFields{
+				"method":     info.FullMethod,
+				"code":       status.Code(err).String(),
+				"duration":   duration.String(),
+				"peer":       peerAddr,
+				"user_agent": userAgent,
+				"host":       host,
+			},
 		)
 		if err != nil {
-			entry = entry.WithError(err)
+			logFields["error"] = err.Error()
 		}
-		entry.Log(determiner(newStreamCallContext(ctx, srv, info), err))
+		logFunc(callCtx, logFields, err)
 
 		return err
 	}
@@ -244,9 +226,9 @@ func StreamServerLogger(logger *logrus.Logger, determiner LogLevelDeterminer, pa
 
 type loggingServerStream struct {
 	grpc.ServerStream
-	method string
-	logger *logrus.Logger
-	level  logrus.Level
+	callCtx *CallContext
+	method  string
+	logFunc LogFunc
 }
 
 func (l *loggingServerStream) SendMsg(m any) error {
@@ -260,16 +242,16 @@ func (l *loggingServerStream) SendMsg(m any) error {
 		resStr = string(resMarshal)
 	}
 
-	entry := l.logger.WithFields(logrus.Fields{
+	logFields := LogFields{
 		"method":   l.method,
 		"event":    "send",
 		"duration": duration.String(),
 		"res":      resStr,
-	})
-	if err != nil {
-		entry = entry.WithError(err)
 	}
-	entry.Log(l.level)
+	if err != nil {
+		logFields["error"] = err.Error()
+	}
+	l.logFunc(l.callCtx, logFields, err)
 
 	return err
 }
@@ -285,16 +267,16 @@ func (l *loggingServerStream) RecvMsg(m any) error {
 		reqStr = string(reqMarshal)
 	}
 
-	entry := l.logger.WithFields(logrus.Fields{
+	logFields := LogFields{
 		"method":   l.method,
 		"event":    "recv",
 		"duration": duration.String(),
 		"req":      reqStr,
-	})
-	if err != nil {
-		entry = entry.WithError(err)
 	}
-	entry.Log(l.level)
+	if err != nil {
+		logFields["error"] = err.Error()
+	}
+	l.logFunc(l.callCtx, logFields, err)
 
 	return err
 }
